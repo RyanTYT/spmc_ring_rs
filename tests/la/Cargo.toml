@@ -1,0 +1,56 @@
+[package]
+name = "spmc-ring-buffer-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# ---------------------------------------------------------------------------
+# This crate is the TEST HARNESS. The implementation under test lives in the
+# real crate `spmc_ring`; the integration tests under tests/ import from
+# `spmc_ring::ring_buffer::spmc_ring_buffer::*`.
+#
+# src/lib.rs here remains as an executable specification of the contract,
+# mirroring the same module path — but the tests link `spmc_ring`, not this
+# crate's lib. Point the `spmc_ring` path dependency below at your real crate.
+#
+# Feature switches (forwarded to the spmc_ring dependency):
+#   * test-hooks (default ON) — exposes inspection methods
+#     (true_min_consumer_index, id, read_index, write_index) to the INTEGRATION
+#     tests. Integration tests link the lib WITHOUT cfg(test), so cfg(test)
+#     would hide the hooks — a feature is the correct gate. Your spmc_ring crate
+#     must declare a matching `test-hooks` feature; this crate forwards to it.
+#   * loom — swaps std atomics/cells for loom's instrumented ones. Enable with
+#     `--features loom`. Your spmc_ring crate must declare a matching `loom`
+#     feature (and the optional loom dep); this crate forwards to it.
+#   * heavy-stress — the million-iteration stress runs (local to the tests).
+# ---------------------------------------------------------------------------
+
+[dependencies]
+# >>> Point this at your real crate. Adjust the path (or use a workspace /
+# >>> git / version dependency) as appropriate for your layout.
+spmc_ring = { path = "../spmc_ring" }
+
+# loom is optional; used both by the reference src/lib.rs and forwarded to
+# spmc_ring when the `loom` feature is on.
+loom = { version = "0.7", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = ["test-hooks"]
+
+# Forward each feature to the spmc_ring dependency so enabling it here toggles
+# the corresponding cfg in the real implementation. (Your spmc_ring crate must
+# define `test-hooks` and `loom` features accordingly.)
+test-hooks = ["spmc_ring/test-hooks"]
+loom = ["dep:loom", "spmc_ring/loom"]
+
+# Local-only (does not need forwarding): scales the stress iteration counts.
+heavy-stress = []
+
+[profile.test]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
