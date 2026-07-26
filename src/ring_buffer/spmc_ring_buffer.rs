@@ -1,9 +1,25 @@
-// Restrictions:
-// - Cannot delete consumer erratically after adding - can only decrement from latest added consumer
+/*
+Restrictions:
+- Cannot delete consumer erratically after adding - can only decrement from latest added consumer
+- Can talk about Relax -> Acquire ordering on line 208
+- Can talk about loom + mrsi testing
+- Want to build
+    - naive lock implementation: compare w this
+    - implementation without CacheAligned - check memory thruput
+    - implementation without caching of pointer in producer
+*/
 
+#[cfg(feature = "loom")]
+use loom::cell::UnsafeCell;
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(not(feature = "loom"))]
 use std::cell::UnsafeCell;
-use std::ops::Deref;
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use std::ops::Deref;
 use std::usize::MAX;
 
 // const SPMC_RING_SIZE: usize = 2_usize.pow(3);
@@ -35,7 +51,7 @@ unsafe impl<T: Send, const CAPACITY: usize> Send for SpmcRingBufferProducer<T, C
 unsafe impl<T: Send, const CAPACITY: usize> Send for SpmcRingBufferConsumer<T, CAPACITY> {}
 
 pub struct SpmcRingBuffer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> {
-    heads: UnsafeCell<[CacheAligned<AtomicUsize>; NUM_CONSUMERS]>,
+    heads: [CacheAligned<AtomicUsize>; NUM_CONSUMERS],
     tail: CacheAligned<AtomicUsize>,
     num_producers: AtomicUsize,
     num_consumers: AtomicUsize,
@@ -43,7 +59,8 @@ pub struct SpmcRingBuffer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> 
     // Unpadded read-only fields packed together
     // UnsafeCell -> allow for mutation of elements across threads - without self being mutable
     // reference + data directly in struct
-    buffer: UnsafeCell<[Option<T>; CAPACITY]>,
+    // buffer: UnsafeCell<[Option<T>; CAPACITY]>,
+    buffer: [UnsafeCell<Option<T>>; CAPACITY],
 }
 
 impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
@@ -57,34 +74,33 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
     pub fn new() -> Self {
         let () = Self::CHECK;
         Self {
-            // head: CacheAligned(AtomicUsize::new(0)),
-            heads: UnsafeCell::new([const { CacheAligned(AtomicUsize::new(0)) }; NUM_CONSUMERS]),
+            #[cfg(feature = "loom")]
+            heads: std::array::from_fn(|_| CacheAligned(AtomicUsize::new(0))),
+            #[cfg(not(feature = "loom"))]
+            heads: [const { CacheAligned(AtomicUsize::new(0)) }; NUM_CONSUMERS],
             tail: CacheAligned(AtomicUsize::new(0)),
             num_producers: AtomicUsize::new(0),
             num_consumers: AtomicUsize::new(0),
-            buffer: UnsafeCell::new([const { None }; CAPACITY]),
+            #[cfg(feature = "loom")]
+            buffer: std::array::from_fn(|_| UnsafeCell::new(None)),
+            #[cfg(not(feature = "loom"))]
+            buffer: [const { UnsafeCell::new(None) }; CAPACITY],
         }
     }
 
     pub fn get_new_producer(&self) -> Option<SpmcRingBufferProducer<T, CAPACITY>> {
-        if let Err(_) = self.num_producers.compare_exchange_weak(
+        if let Err(_) = self.num_producers.compare_exchange(
             0,
             1,
-            Ordering::Release,
+            Ordering::Acquire,
             Ordering::Relaxed, // check if Acquire here makes a diff
         ) {
             return None;
-        };
+        }
 
-        let heads = unsafe {
-            let buffer_ptr = self.heads.get();
-            (*buffer_ptr).as_mut_ptr()
-        };
+        let heads = self.heads.as_ptr() as *mut CacheAligned<AtomicUsize>;
         let tail = &self.tail.0 as *const AtomicUsize;
-        let buffer = unsafe {
-            let buffer_ptr = self.buffer.get();
-            (*buffer_ptr).as_mut_ptr()
-        };
+        let buffer = self.buffer.as_ptr() as *mut UnsafeCell<Option<T>>;
         let last_slowest_head = UnsafeCell::new(0_usize);
         let num_consumers = &self.num_consumers as *const AtomicUsize;
         Some(SpmcRingBufferProducer {
@@ -118,20 +134,17 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
         }
 
         let head = unsafe {
-            let head_ptr = self.heads.get();
-            (*head_ptr).as_mut_ptr().add(current_consumers)
+            let head_ptr = self.heads.as_ptr() as *mut CacheAligned<AtomicUsize>;
+            head_ptr.add(current_consumers)
         };
         let tail = &self.tail.0 as *const AtomicUsize;
-        let buffer = unsafe {
-            let buffer_ptr = self.buffer.get();
-            (*buffer_ptr).as_mut_ptr()
-        };
+        let buffer = self.buffer.as_ptr() as *mut UnsafeCell<Option<T>>;
         Some(SpmcRingBufferConsumer {
             head,
             tail,
             buffer,
 
-            #[cfg(test)]
+            #[cfg(feature = "test-hooks")]
             id: current_consumers,
         })
     }
@@ -141,19 +154,57 @@ pub struct SpmcRingBufferProducer<T, const CAPACITY: usize> {
     last_slowest_head: UnsafeCell<usize>,
     heads: *mut CacheAligned<AtomicUsize>,
     tail: *const AtomicUsize,
-    buffer: *mut Option<T>,
+    buffer: *mut UnsafeCell<Option<T>>,
 
     num_consumers: *const AtomicUsize,
 }
 
 impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
+    #[cfg(feature = "test-hooks")]
+    pub fn cached_min_consumer_index(&self) -> usize {
+        unsafe {
+            let last_slowest_head_ptr = self.last_slowest_head.get();
+            #[cfg(feature = "loom")]
+            let val = last_slowest_head_ptr.with(|v| unsafe { *v });
+            #[cfg(not(feature = "loom"))]
+            let val = last_slowest_head_ptr.read();
+
+            val
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub fn true_min_consumer_index(&self) -> usize {
+        unsafe {
+            let num_consumers = (&*self.num_consumers).load(Ordering::Acquire);
+            let current_slowest_head = {
+                let mut slowest_head = MAX;
+                let mut head = self.heads;
+                for _ in 0..num_consumers {
+                    let head_ptr = &*head;
+                    // in consumer - there is no write so no reordering is required
+                    let head_idx = (*head_ptr).load(Ordering::Relaxed);
+                    slowest_head = slowest_head.min(head_idx);
+                    head = head.add(1); // not sure if need to add actual number of bytes - need to
+                    // confirm
+                }
+                slowest_head
+            };
+            current_slowest_head
+        }
+    }
+
     pub fn try_push(&self, item: T) -> Result<(), T> {
         let tail = unsafe { (*self.tail).load(Ordering::Relaxed) };
 
         // get earliest head - cached, and if cached is full, then check updated values
         unsafe {
             let num_consumers = (&*self.num_consumers).load(Ordering::Acquire);
+            #[cfg(not(feature = "loom"))]
             let last_slowest_head_ptr = self.last_slowest_head.get();
+            #[cfg(feature = "loom")]
+            let last_slowest_head = self.last_slowest_head.with(|v| *v);
+            #[cfg(not(feature = "loom"))]
             let last_slowest_head = last_slowest_head_ptr.read();
             if tail - last_slowest_head == CAPACITY {
                 let current_slowest_head = {
@@ -161,26 +212,31 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
                     let mut head = self.heads;
                     for _ in 0..num_consumers {
                         let head_ptr = &*head;
-                        // in consumer - there is no write so no reordering is required
-                        let head_idx = head_ptr.load(Ordering::Relaxed);
+                        let head_idx = head_ptr.load(Ordering::Acquire);
                         slowest_head = slowest_head.min(head_idx);
-                        head = head.add(1); // not sure if need to add actual number of bytes - need to
-                        // confirm
+                        head = head.add(1);
                     }
                     slowest_head
                 };
                 if last_slowest_head == current_slowest_head {
                     return Err(item);
                 }
+
+                #[cfg(feature = "loom")]
+                self.last_slowest_head
+                    .with_mut(|v| *v = current_slowest_head);
+                #[cfg(not(feature = "loom"))]
                 last_slowest_head_ptr.write(current_slowest_head);
             }
         };
 
         // write data
         unsafe {
-            // let buffer = buffer_ref.get() as *mut Option<T>;
             let position_ptr = self.buffer.add(tail & (CAPACITY - 1));
-            position_ptr.write(Some(item));
+            #[cfg(not(feature = "loom"))]
+            std::ptr::replace((*position_ptr).get(), Some(item));
+            #[cfg(feature = "loom")]
+            (&*position_ptr).with_mut(|p| *p = Some(item));
         }
 
         // update tail pointer
@@ -212,20 +268,20 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
 pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize> {
     head: *mut CacheAligned<AtomicUsize>,
     tail: *const AtomicUsize,
-    buffer: *mut Option<T>,
+    buffer: *mut UnsafeCell<Option<T>>,
 
-    #[cfg(test)]
+    #[cfg(feature = "test-hooks")]
     id: usize,
 }
 
 impl<T: Clone, const CAPACITY: usize> SpmcRingBufferConsumer<T, CAPACITY> {
-    #[cfg(test)]
+    #[cfg(feature = "test-hooks")]
     pub fn id(&self) -> usize {
         return self.id;
     }
 
     pub fn try_pop(&self) -> Option<T> {
-        let head = unsafe { (&*self.head).load(Ordering::Relaxed) };
+        let head = unsafe { (*self.head).load(Ordering::Relaxed) };
         let tail = unsafe { (*self.tail).load(Ordering::Acquire) };
 
         if tail - head == 0 {
@@ -234,15 +290,20 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferConsumer<T, CAPACITY> {
         }
 
         // read data
+        #[cfg(feature = "loom")]
         let val = unsafe {
             let position_ptr = self.buffer.add(head & (CAPACITY - 1));
-            position_ptr.read()
+            (&*position_ptr).with(|v| (*v).clone())
+        };
+        #[cfg(not(feature = "loom"))]
+        let val = unsafe {
+            let position_ptr = self.buffer.add(head & (CAPACITY - 1));
+            (*(*position_ptr).get()).clone()
         };
 
-        // update head pointer
+        // update head pointer - syncs with previous read statement
         unsafe {
-            // syncs with previous read statement
-            (&*self.head).store(head + 1_usize, Ordering::Release);
+            (*self.head).store(head + 1_usize, Ordering::Release);
         }
 
         val
