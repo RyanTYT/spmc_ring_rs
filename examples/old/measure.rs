@@ -79,6 +79,10 @@ pub struct MeasureTool {
 }
 
 impl MeasureTool {
+    pub fn get(&self) -> usize {
+        return self.timings.read().unwrap().len();
+    }
+
     pub fn new() -> Self {
         let timings = Vec::new();
         let timings_wrapped = Arc::new(RwLock::new(timings));
@@ -131,7 +135,7 @@ impl MeasureTool {
     /// - if a previous end time was called and not flushed, it will be overriden (can cause race conditions)
     /// - if no associated start time can be found, will be put in map
     pub fn end_time(&self, name: &str) {
-        if let Err(e) = self.instant_sender.send(MeasureInstant::Start {
+        if let Err(e) = self.instant_sender.send(MeasureInstant::End {
             name: name.to_string(),
             instant: Instant::now(),
         }) {
@@ -198,6 +202,75 @@ impl MeasureTool {
                 .bar_width(6)
                 .bar_gap(1),
         )
+    }
+
+    pub fn print_stats(&self) {
+        let guard = self.timings.read().unwrap();
+        if guard.is_empty() {
+            println!("No timings recorded.");
+            return;
+        }
+
+        // Convert durations to nanos and collect into a mutable vector for sorting
+        let mut timings_ns: Vec<u128> = guard.iter().map(|dur| dur.as_nanos()).collect();
+        timings_ns.sort_unstable();
+
+        let count = timings_ns.len();
+        let min = timings_ns[0];
+        let max = timings_ns[count - 1];
+
+        // Sum for average
+        let sum: u128 = timings_ns.iter().sum();
+        let avg = sum / count as u128;
+
+        // Percentiles (using nearest-rank method)
+        let median = timings_ns[count / 2];
+        let p95 = timings_ns[(count * 95) / 100];
+        let p99 = timings_ns[(count * 99) / 100];
+        let p999 = timings_ns[(count * 999) / 1000];
+
+        // Standard Deviation calculation
+        let variance = timings_ns
+            .iter()
+            .map(|&val| {
+                let diff = val as i128 - avg as i128;
+                (diff * diff) as u128
+            })
+            .sum::<u128>()
+            / count as u128;
+        let std_dev = (variance as f64).sqrt();
+
+        // Pretty Print Results
+        println!("--- Latency Statistics ({count} samples) ---");
+        println!(
+            "  Min:      {:?}",
+            std::time::Duration::from_nanos(min as u64)
+        );
+        println!(
+            "  Max:      {:?}",
+            std::time::Duration::from_nanos(max as u64)
+        );
+        println!(
+            "  Average:  {:?}",
+            std::time::Duration::from_nanos(avg as u64)
+        );
+        println!(
+            "  Median:   {:?}",
+            std::time::Duration::from_nanos(median as u64)
+        );
+        println!(
+            "  p95:      {:?}",
+            std::time::Duration::from_nanos(p95 as u64)
+        );
+        println!(
+            "  p99:      {:?}",
+            std::time::Duration::from_nanos(p99 as u64)
+        );
+        println!(
+            "  p99.9:    {:?}",
+            std::time::Duration::from_nanos(p999 as u64)
+        );
+        println!("  Std Dev:  {:.2} ms", std_dev / 1_000_000.0); // or display as duration
     }
 
     pub fn plot_histogram(&self, frame: &mut Frame, num_bars: usize) {

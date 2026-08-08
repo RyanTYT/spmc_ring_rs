@@ -3,14 +3,17 @@
 //! Adjust the `use` paths below to match your crate's actual module layout
 //! (replace `crate::` below with wherever `SpmcRingBuffer`, `MeasureTool`, and your `SyncRingBuffer` reference impl actually live in rusty_trader).
 //!
-//! Default behaviour (no flags): runs only the raw `SpmcRingBuffer` push/pop
-//! loop, with no correctness check and no MeasureTool instrumentation, so
-//! the binary is clean to profile with `perf stat ./ring_bench`.
+//! Default behaviour (no flags): runs only the lock-free `SpmcRingBuffer`
+//! push/pop loop, with no correctness check and no MeasureTool
+//! instrumentation, so the binary is clean to profile with `perf stat
+//! ./ring_bench`.
 //!
-//!   --check              also run a synchronous reference implementation
-//!                         (`SyncRingBuffer`) over the same input and verify
-//!                         every consumer received items in the exact
-//!                         produced order.
+//!   --implementation      which ring buffer implementation to benchmark:
+//!                         `lock-free` (SpmcRingBuffer, default) or `locked`
+//!                         (SyncRingBuffer, mutex-based).
+//!   --check              also run the *other* implementation over the same
+//!                         input and verify every consumer received items in
+//!                         the exact produced order.
 //!   --measure             wrap every push/pop in MeasureTool::start_time /
 //!                         end_time and render a latency histogram at the end.
 //!   -c, --capacity        ring buffer capacity (power of two).
@@ -20,7 +23,7 @@
 //!   -s, --item-size       payload size in bytes per item
 //!       --num-bars        histogram bucket count (only with --measure)
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use crossterm::{
     event, execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -43,9 +46,39 @@ use measure::MeasureTool;
 /// item's original index (little-endian u64) so we can verify ordering.
 type Item = Vec<u8>;
 
+/// Which ring buffer implementation to drive as the "primary" benchmarked
+/// implementation. Both map onto the same underlying types used everywhere
+/// else in this file: `LockFree` -> `SpmcRingBuffer`, `Locked` ->
+/// `SyncRingBuffer`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum RingImpl {
+    /// Lock-free SpmcRingBuffer. Default.
+    LockFree,
+    /// Mutex/lock-based SyncRingBuffer.
+    Locked,
+}
+
+impl RingImpl {
+    fn label(self) -> &'static str {
+        match self {
+            RingImpl::LockFree => "SpmcRingBuffer (lock-free)",
+            RingImpl::Locked => "SyncRingBuffer (locked)",
+        }
+    }
+
+    /// The other implementation, used as the `--check` reference when this
+    /// one is the primary.
+    fn other(self) -> RingImpl {
+        match self {
+            RingImpl::LockFree => RingImpl::Locked,
+            RingImpl::Locked => RingImpl::LockFree,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "ring_bench",
+    name = "benchmark",
     about = "Benchmark / correctness harness for SpmcRingBuffer"
 )]
 struct Args {
@@ -66,8 +99,14 @@ struct Args {
     #[arg(long, short = 's', default_value_t = 64)]
     item_size: usize,
 
-    /// Verify SpmcRingBuffer output against a synchronous reference
-    /// implementation (SyncRingBuffer). Off by default.
+    /// Which ring buffer implementation to benchmark: the lock-free
+    /// SpmcRingBuffer, or the locked (mutex-based) SyncRingBuffer.
+    /// Defaults to the lock-free implementation.
+    #[arg(long, short = 'I', value_enum, default_value = "lock-free")]
+    implementation: RingImpl,
+
+    /// Verify the selected implementation's output against the *other*
+    /// implementation (used as a correctness oracle). Off by default.
     #[arg(long, default_value_t = false)]
     check: bool,
 
@@ -231,32 +270,61 @@ macro_rules! dispatch {
             (1024, 2) => $func::<1024, 2>($($arg),+),
             (1024, 4) => $func::<1024, 4>($($arg),+),
             (1024, 8) => $func::<1024, 8>($($arg),+),
+            (1024, 16) => $func::<1024, 16>($($arg),+),
+            (1024, 32) => $func::<1024, 32>($($arg),+),
+            (1024, 64) => $func::<1024, 64>($($arg),+),
             (4096, 1) => $func::<4096, 1>($($arg),+),
             (4096, 2) => $func::<4096, 2>($($arg),+),
             (4096, 4) => $func::<4096, 4>($($arg),+),
             (4096, 8) => $func::<4096, 8>($($arg),+),
+            (4096, 16) => $func::<1024, 16>($($arg),+),
+            (4096, 32) => $func::<1024, 32>($($arg),+),
+            (4096, 64) => $func::<1024, 64>($($arg),+),
             (16384, 1) => $func::<16384, 1>($($arg),+),
             (16384, 2) => $func::<16384, 2>($($arg),+),
             (16384, 4) => $func::<16384, 4>($($arg),+),
             (16384, 8) => $func::<16384, 8>($($arg),+),
+            (16384, 16) => $func::<1024, 16>($($arg),+),
+            (16384, 32) => $func::<1024, 32>($($arg),+),
+            (16384, 64) => $func::<1024, 64>($($arg),+),
             (65536, 1) => $func::<65536, 1>($($arg),+),
             (65536, 2) => $func::<65536, 2>($($arg),+),
             (65536, 4) => $func::<65536, 4>($($arg),+),
             (65536, 8) => $func::<65536, 8>($($arg),+),
+            (65536, 16) => $func::<1024, 16>($($arg),+),
+            (65536, 32) => $func::<1024, 32>($($arg),+),
+            (65536, 64) => $func::<1024, 64>($($arg),+),
             (262144, 1) => $func::<262144, 1>($($arg),+),
             (262144, 2) => $func::<262144, 2>($($arg),+),
             (262144, 4) => $func::<262144, 4>($($arg),+),
             (262144, 8) => $func::<262144, 8>($($arg),+),
+            (262144, 16) => $func::<1024, 16>($($arg),+),
+            (262144, 32) => $func::<1024, 32>($($arg),+),
+            (262144, 64) => $func::<1024, 64>($($arg),+),
             (cap, cons) => {
                 eprintln!(
                     "Unsupported --capacity/--num-consumers combination: {cap} / {cons}.\n\
                      Supported capacities: 1024, 4096, 16384, 65536, 262144\n\
-                     Supported consumer counts: 1, 2, 4, 8"
+                     Supported consumer counts: 1, 2, 4, 8, 16, 32, 64"
                 );
                 std::process::exit(1);
             }
         }
     };
+}
+
+/// Runs the given `RingImpl` (dispatching to `run_spmc` or `run_sync` under
+/// the hood) for the current `--capacity`/`--num-consumers` combination.
+fn run_impl(
+    which: RingImpl,
+    args: &Args,
+    items: &[Item],
+    measure: Option<&MeasureTool>,
+) -> RunOutcome {
+    match which {
+        RingImpl::LockFree => dispatch!(run_spmc, args.capacity, args.num_consumers, args, items, measure),
+        RingImpl::Locked => dispatch!(run_sync, args.capacity, args.num_consumers, args, items, measure),
+    }
 }
 
 /// `SpmcRingBuffer::new()` / `SyncRingBuffer::new()` return `Self` by value,
@@ -284,28 +352,37 @@ fn print_summary(label: &str, outcome: &RunOutcome, num_items: usize) {
     println!("--- {label} ---");
     let producer_throughput = num_items as f64 / outcome.producer_elapsed.as_secs_f64();
     println!(
-        "producer: {:?} ({producer_throughput:.0} items/sec)",
-        outcome.producer_elapsed
+        "producer latency: {:?} ({producer_throughput:.0} items/sec)",
+        outcome.producer_elapsed.div_f64(num_items as f64)
     );
     for (i, elapsed) in outcome.consumer_elapsed.iter().enumerate() {
         let throughput = num_items as f64 / elapsed.as_secs_f64();
-        println!("consumer[{i}]: {elapsed:?} ({throughput:.0} items/sec)");
+        println!(
+            "consumer latency[{i}]: {:?} ({throughput:.0} items/sec)",
+            elapsed.div_f64(num_items as f64)
+        );
     }
 }
 
-fn compare_outcomes(items: &[Item], spmc: &RunOutcome, sync: &RunOutcome) {
+fn compare_outcomes(
+    items: &[Item],
+    primary_label: &str,
+    primary: &RunOutcome,
+    reference_label: &str,
+    reference: &RunOutcome,
+) {
     let expected: Vec<u64> = items.iter().map(item_index).collect();
-    let spmc_seqs = spmc
+    let primary_seqs = primary
         .consumer_sequences
         .as_ref()
         .expect("--check should record sequences");
-    let sync_seqs = sync
+    let reference_seqs = reference
         .consumer_sequences
         .as_ref()
         .expect("--check should record sequences");
 
     let mut all_ok = true;
-    for (label, seqs) in [("SpmcRingBuffer", spmc_seqs), ("SyncRingBuffer", sync_seqs)] {
+    for (label, seqs) in [(primary_label, primary_seqs), (reference_label, reference_seqs)] {
         for (cid, seq) in seqs.iter().enumerate() {
             if seq != &expected {
                 all_ok = false;
@@ -377,36 +454,44 @@ fn main() {
     // is just the raw push/pop loop, suitable for `perf stat`.
     let measure_tool = args.measure.then(MeasureTool::new);
 
+    // Bind references up front: the closures below are `move` closures (to
+    // satisfy the `'scope` bound on `run_with_big_stack`), and a `move`
+    // closure that uses `&args`/`&items` in its body captures the whole
+    // owned value, not just a reference to it. Capturing these `&Args`/
+    // `&[Item]` references instead means each closure only moves a
+    // (Copy) reference, leaving `args`/`items`/`measure_tool` usable
+    // afterwards.
+    let args_ref = &args;
+    let items_ref = &items;
+    let measure_ref = measure_tool.as_ref();
+
     thread::scope(|scope| {
-        let spmc_outcome = run_with_big_stack(scope, || {
-            dispatch!(
-                run_spmc,
-                args.capacity,
-                args.num_consumers,
-                &args,
-                &items,
-                measure_tool.as_ref()
-            )
+        let primary_impl = args.implementation;
+        let primary_outcome = run_with_big_stack(scope, move || {
+            run_impl(primary_impl, args_ref, items_ref, measure_ref)
         });
-        print_summary("SpmcRingBuffer", &spmc_outcome, args.num_items);
+        print_summary(primary_impl.label(), &primary_outcome, args.num_items);
 
         if args.check {
+            // `--check` always runs the *other* implementation as a
+            // correctness oracle, whichever one was selected as primary.
             // No point instrumenting the reference implementation's timings.
-            let sync_outcome = run_with_big_stack(scope, || {
-                dispatch!(
-                    run_sync,
-                    args.capacity,
-                    args.num_consumers,
-                    &args,
-                    &items,
-                    None
-                )
+            let reference_impl = primary_impl.other();
+            let reference_outcome = run_with_big_stack(scope, move || {
+                run_impl(reference_impl, args_ref, items_ref, None)
             });
-            print_summary("SyncRingBuffer (reference)", &sync_outcome, args.num_items);
-            compare_outcomes(&items, &spmc_outcome, &sync_outcome);
+            print_summary(reference_impl.label(), &reference_outcome, args.num_items);
+            compare_outcomes(
+                &items,
+                primary_impl.label(),
+                &primary_outcome,
+                reference_impl.label(),
+                &reference_outcome,
+            );
         }
 
         if let Some(tool) = &measure_tool {
+            tool.print_stats();
             show_histogram(tool, args.num_bars);
         }
     });
@@ -438,7 +523,7 @@ fn main() {
 //    ratatui / crossterm / thread-priority you already have via
 //    measure_tool.rs.
 //
-// 5. Two things you may not expect, both already handled here, worth
+// 5. Three things you may not expect, all already handled here, worth
 //    knowing about if you extend this file:
 //      - The dispatch! match's branches must stay behind #[inline(never)]
 //        runner functions, or some optimization levels will inline several
@@ -448,9 +533,16 @@ fn main() {
 //        puts the whole CAPACITY-sized buffer on the calling thread's
 //        stack. That's why the actual run happens on a thread with an
 //        explicit 512 MB stack rather than directly on main.
+//      - `--implementation` picks which implementation is treated as
+//        "primary" (the one whose timings get reported and instrumented
+//        with --measure). `--check` always runs whichever implementation
+//        was *not* selected as the reference oracle, so `--check` compares
+//        the two against each other regardless of which one is primary.
 //
 // 6. Example invocations:
 //      cargo build --release --bin ring_bench
 //      perf stat ./target/release/ring_bench -c 65536 -n 4 -i 5000000
 //      ./target/release/ring_bench -c 4096 -n 4 -i 500000 --check
 //      ./target/release/ring_bench -c 4096 -n 2 -i 200000 --measure
+//      ./target/release/ring_bench --implementation locked -c 4096 -i 500000
+//      ./target/release/ring_bench -I locked --check -c 4096 -n 2 -i 200000
