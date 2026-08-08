@@ -20,6 +20,7 @@ default = []
 heavy-stress = []
 loom = ["dep:loom"]
 test-hooks = []
+bench = []
 
 # Keep loom's search space sane: loom builds are their own thing.
 [profile.release]
