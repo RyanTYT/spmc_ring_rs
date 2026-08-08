@@ -88,6 +88,12 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
         Some(SyncRingBufferConsumer {
             head,
             tail: Arc::clone(&self.tail),
+            cached_tail: Arc::new(RwLock::new(
+                *self
+                    .tail
+                    .read()
+                    .expect("Expected to be able to get RwLock for tail in get_new_consumer"),
+            )),
             buffer: Arc::clone(&self.buffer),
         })
     }
@@ -149,6 +155,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
 pub struct SyncRingBufferConsumer<T, const CAPACITY: usize> {
     head: Arc<RwLock<usize>>,
     tail: Arc<RwLock<usize>>,
+    cached_tail: Arc<RwLock<usize>>,
     buffer: Arc<[RwLock<Option<T>>; CAPACITY]>,
 }
 
@@ -156,13 +163,17 @@ impl<T: Clone, const CAPACITY: usize> SyncRingBufferConsumer<T, CAPACITY> {
     pub fn try_pop(&self) -> Option<T> {
         let mut head = self.head.write().ok()?;
         let val = {
-            let tail = self.tail.read().ok()?;
+            let mut cached_tail = self.cached_tail.write().ok()?;
+            if *cached_tail - *head == 0 {
+                let tail = self.tail.read().ok()?;
 
-            if *tail - *head == 0 {
                 // ring buffer is empty
-                return None;
-            }
+                if *tail == *cached_tail {
+                    return None;
+                }
 
+                *cached_tail = *tail;
+            }
             // read data
             self.buffer[*head & (CAPACITY - 1)]
                 .read()

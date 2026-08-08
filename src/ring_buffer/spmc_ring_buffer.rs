@@ -20,13 +20,14 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::ops::Deref;
+use std::thread;
 use std::usize::MAX;
 
 // const SPMC_RING_SIZE: usize = 2_usize.pow(3);
 // const NUM_CONSUMERS: usize = 4_usize;
 
 // Align to 64 bytes to protect against 64B prefetching & 64B cache lines - on i7
-#[repr(align(64))]
+#[repr(align(128))]
 pub struct CacheAligned<T>(pub T);
 
 impl<T> Deref for CacheAligned<T> {
@@ -138,10 +139,12 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             head_ptr.add(current_consumers)
         };
         let tail = &self.tail.0 as *const AtomicUsize;
+        let cached_tail = UnsafeCell::new(self.tail.0.load(Ordering::Acquire));
         let buffer = self.buffer.as_ptr() as *mut UnsafeCell<Option<T>>;
         Some(SpmcRingBufferConsumer {
             head,
             tail,
+            cached_tail,
             buffer,
 
             #[cfg(feature = "test-hooks")]
@@ -257,6 +260,7 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
                     item = returned;
                     for _ in 0..backoff_num {
                         std::hint::spin_loop();
+                        // thread::yield_now();
                     }
                     backoff_num += 1;
                 }
@@ -268,6 +272,7 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
 pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize> {
     head: *mut CacheAligned<AtomicUsize>,
     tail: *const AtomicUsize,
+    cached_tail: UnsafeCell<usize>,
     buffer: *mut UnsafeCell<Option<T>>,
 
     #[cfg(feature = "test-hooks")]
@@ -282,11 +287,29 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferConsumer<T, CAPACITY> {
 
     pub fn try_pop(&self) -> Option<T> {
         let head = unsafe { (*self.head).load(Ordering::Relaxed) };
-        let tail = unsafe { (*self.tail).load(Ordering::Acquire) };
 
-        if tail - head == 0 {
-            // ring buffer is empty
-            return None;
+        let cached_tail = unsafe {
+            let cached_tail_ptr = self.cached_tail.get();
+            #[cfg(feature = "loom")]
+            let val = cached_tail_ptr.with(|v| unsafe { *v });
+            #[cfg(not(feature = "loom"))]
+            let val = cached_tail_ptr.read();
+
+            val
+        };
+        if cached_tail - head == 0 {
+            let tail = unsafe { (*self.tail).load(Ordering::Acquire) };
+            // ring buffer is actually empty
+            if cached_tail == tail {
+                return None;
+            }
+
+            unsafe {
+                #[cfg(feature = "loom")]
+                self.cached_tail.with_mut(|v| unsafe { *v = tail });
+                #[cfg(not(feature = "loom"))]
+                self.cached_tail.get().write(tail);
+            }
         }
 
         // read data
@@ -317,6 +340,7 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferConsumer<T, CAPACITY> {
                 None => {
                     for _ in 0..backoff_num {
                         std::hint::spin_loop();
+                        // thread::yield_now();
                     }
                     backoff_num += 1;
                 }
