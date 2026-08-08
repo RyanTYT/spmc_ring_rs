@@ -20,7 +20,6 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::ops::Deref;
-use std::thread;
 use std::usize::MAX;
 
 // const SPMC_RING_SIZE: usize = 2_usize.pow(3);
