@@ -16,6 +16,7 @@ use loom::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(feature = "loom"))]
 use std::cell::UnsafeCell;
+use std::marker::PhantomPinned;
 #[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -61,6 +62,7 @@ pub struct SpmcRingBuffer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> 
     // reference + data directly in struct
     // buffer: UnsafeCell<[Option<T>; CAPACITY]>,
     buffer: [UnsafeCell<Option<T>>; CAPACITY],
+    _pin: PhantomPinned,
 }
 
 impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
@@ -85,10 +87,13 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             buffer: std::array::from_fn(|_| UnsafeCell::new(None)),
             #[cfg(not(feature = "loom"))]
             buffer: [const { UnsafeCell::new(None) }; CAPACITY],
+            _pin: PhantomPinned,
         }
     }
 
-    pub fn get_new_producer(&self) -> Option<SpmcRingBufferProducer<T, CAPACITY>> {
+    pub fn get_new_producer(
+        self: std::pin::Pin<&Self>,
+    ) -> Option<SpmcRingBufferProducer<T, CAPACITY>> {
         if let Err(_) = self.num_producers.compare_exchange(
             0,
             1,
@@ -113,7 +118,9 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
         })
     }
 
-    pub fn get_new_consumer(&self) -> Option<SpmcRingBufferConsumer<T, CAPACITY>> {
+    pub fn get_new_consumer(
+        self: std::pin::Pin<&Self>,
+    ) -> Option<SpmcRingBufferConsumer<T, CAPACITY>> {
         let mut current_consumers = self.num_consumers.load(Ordering::Acquire);
         loop {
             // 1. Guard check: Reject if maximum consumers reached
