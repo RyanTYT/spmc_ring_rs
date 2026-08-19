@@ -40,6 +40,7 @@
 //! See the methodology discussion in the plan (and `report/README.md`) for the
 //! full rationale.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Batch size for fast-path batched latency. 512 keeps per-op Instant overhead
@@ -423,7 +424,7 @@ mod tests {
     /// populated.
     #[test]
     fn push_stats_records_fast_and_slow_path() {
-        let rb = SpmcRingBuffer::<u64, 4, 1>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 4, 1>::new());
         let _idle = rb.get_new_consumer().unwrap(); // registered, never consumes → fills
         let mut producer = rb.get_new_producer().unwrap();
 

@@ -21,6 +21,7 @@
 //! adjacent threads' stats don't false-share.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::time::Duration;
@@ -75,7 +76,7 @@ fn run_trial<P: Payload, RB: RingBuffer<P, CAP, N>, const CAP: usize, const N: u
     let phase = AtomicU8::new(PHASE_WARMUP);
     let stop = AtomicBool::new(false);
 
-    let rb = RB::new();
+    let rb = Arc::new(RB::new());
     let mut producer = rb.get_new_producer().expect("producer slot available");
     let consumers: Vec<_> = (0..N)
         .map(|_| rb.get_new_consumer().expect("consumer slot available"))

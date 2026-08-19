@@ -14,6 +14,7 @@
 #![cfg(not(feature = "loom"))]
 
 use spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBuffer;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 static LIVE: AtomicI64 = AtomicI64::new(0);
@@ -82,7 +83,7 @@ fn drop_semantics_all_sections_sequential() {
 
 fn no_leak_on_simple_fill_and_drain() {
     assert_balanced(|| {
-        let rb = SpmcRingBuffer::<Tracked, 4, 4>::new();
+        let rb = Arc::new(SpmcRingBuffer::<Tracked, 4, 4>::new());
         let p = rb.get_new_producer().unwrap();
         let c = rb.get_new_consumer().unwrap();
 
@@ -108,7 +109,7 @@ fn no_leak_on_simple_fill_and_drain() {
 
 fn no_leak_across_wrap_around() {
     assert_balanced(|| {
-        let rb = SpmcRingBuffer::<Tracked, 4, 4>::new();
+        let rb = Arc::new(SpmcRingBuffer::<Tracked, 4, 4>::new());
         let p = rb.get_new_producer().unwrap();
         let c = rb.get_new_consumer().unwrap();
 
@@ -124,7 +125,7 @@ fn no_leak_when_buffer_dropped_while_non_empty() {
     // Values still resident in slots must be dropped exactly once when the
     // buffer itself is dropped.
     assert_balanced(|| {
-        let rb = SpmcRingBuffer::<Tracked, 8, 4>::new();
+        let rb = Arc::new(SpmcRingBuffer::<Tracked, 8, 4>::new());
         let p = rb.get_new_producer().unwrap();
         let _c = rb.get_new_consumer().unwrap();
         for i in 0..8u64 {
@@ -136,7 +137,7 @@ fn no_leak_when_buffer_dropped_while_non_empty() {
 
 fn no_leak_with_multiple_consumers() {
     assert_balanced(|| {
-        let rb = SpmcRingBuffer::<Tracked, 8, 4>::new();
+        let rb = Arc::new(SpmcRingBuffer::<Tracked, 8, 4>::new());
         let mut p = rb.get_new_producer().unwrap();
         let c1 = rb.get_new_consumer().unwrap();
         let c2 = rb.get_new_consumer().unwrap();

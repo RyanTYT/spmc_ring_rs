@@ -27,6 +27,7 @@
 //! `scenario!` macro so each is a readable one-liner.
 
 use crate::ring_buffer::{spmc_ring_buffer, sync_spmc_ring_buffer};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Traits.
@@ -64,9 +65,16 @@ pub trait RingBuffer<T, const CAP: usize, const N: usize>: Sized + Send + Sync {
     fn new() -> Self;
     /// Obtain the (single) producer handle. Returns `None` if a producer has
     /// already been issued (single-producer invariant).
-    fn get_new_producer(&self) -> Option<Self::Producer>;
+    ///
+    /// Takes `&Arc<Self>` so backends whose producer/consumer handles keep the
+    /// buffer's allocation alive via a cloned `Arc` (e.g. `SpmcRingBuffer`)
+    /// can capture that stake. Backends that don't need it (e.g.
+    /// `SyncRingBuffer`, whose internal storage is already `Arc`-shared) just
+    /// deref the `Arc` and call their `&self`-receiver inherent method.
+    fn get_new_producer(self: &Arc<Self>) -> Option<Self::Producer>;
     /// Register a new consumer. Returns `None` if all `N` slots are taken.
-    fn get_new_consumer(&self) -> Option<Self::Consumer>;
+    /// See `get_new_producer` for why the receiver is `&Arc<Self>`.
+    fn get_new_consumer(self: &Arc<Self>) -> Option<Self::Consumer>;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,22 +91,22 @@ pub trait RingBuffer<T, const CAP: usize, const N: usize>: Sized + Send + Sync {
 impl<T: Clone + Send, const CAP: usize, const N: usize> RingBuffer<T, CAP, N>
     for spmc_ring_buffer::SpmcRingBuffer<T, CAP, N>
 {
-    type Producer = spmc_ring_buffer::SpmcRingBufferProducer<T, CAP>;
-    type Consumer = spmc_ring_buffer::SpmcRingBufferConsumer<T, CAP>;
+    type Producer = spmc_ring_buffer::SpmcRingBufferProducer<T, CAP, N>;
+    type Consumer = spmc_ring_buffer::SpmcRingBufferConsumer<T, CAP, N>;
 
     fn new() -> Self {
         spmc_ring_buffer::SpmcRingBuffer::new()
     }
-    fn get_new_producer(&self) -> Option<Self::Producer> {
-        self.get_new_producer() // inherent
+    fn get_new_producer(self: &Arc<Self>) -> Option<Self::Producer> {
+        spmc_ring_buffer::SpmcRingBuffer::get_new_producer(self) // inherent
     }
-    fn get_new_consumer(&self) -> Option<Self::Consumer> {
-        self.get_new_consumer() // inherent
+    fn get_new_consumer(self: &Arc<Self>) -> Option<Self::Consumer> {
+        spmc_ring_buffer::SpmcRingBuffer::get_new_consumer(self) // inherent
     }
 }
 
-impl<T: Clone, const CAP: usize> RbProducer<T>
-    for spmc_ring_buffer::SpmcRingBufferProducer<T, CAP>
+impl<T: Clone, const CAP: usize, const N: usize> RbProducer<T>
+    for spmc_ring_buffer::SpmcRingBufferProducer<T, CAP, N>
 {
     fn try_push(&mut self, item: T) -> Result<(), T> {
         spmc_ring_buffer::SpmcRingBufferProducer::try_push(&self, item)
@@ -108,8 +116,8 @@ impl<T: Clone, const CAP: usize> RbProducer<T>
     }
 }
 
-impl<T: Clone, const CAP: usize> RbConsumer<T>
-    for spmc_ring_buffer::SpmcRingBufferConsumer<T, CAP>
+impl<T: Clone, const CAP: usize, const N: usize> RbConsumer<T>
+    for spmc_ring_buffer::SpmcRingBufferConsumer<T, CAP, N>
 {
     fn try_pop(&self) -> Option<T> {
         self.try_pop() // inherent
@@ -135,11 +143,14 @@ impl<T: Clone + Send + Sync, const CAP: usize, const N: usize> RingBuffer<T, CAP
     fn new() -> Self {
         sync_spmc_ring_buffer::SyncRingBuffer::new()
     }
-    fn get_new_producer(&self) -> Option<Self::Producer> {
-        self.get_new_producer() // inherent
+    fn get_new_producer(self: &Arc<Self>) -> Option<Self::Producer> {
+        // SyncRingBuffer's inherent get_new_producer takes &self; deref the
+        // Arc to call it. The SyncRingBuffer's own internal storage is already
+        // Arc-shared, so no extra keep-alive stake is needed here.
+        (**self).get_new_producer()
     }
-    fn get_new_consumer(&self) -> Option<Self::Consumer> {
-        self.get_new_consumer() // inherent
+    fn get_new_consumer(self: &Arc<Self>) -> Option<Self::Consumer> {
+        (**self).get_new_consumer()
     }
 }
 

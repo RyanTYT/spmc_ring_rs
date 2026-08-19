@@ -18,6 +18,7 @@
 #![cfg(not(feature = "loom"))]
 
 use spmc_ring::ring_buffer::spmc_ring_buffer::{SpmcRingBufferConsumer, SpmcRingBuffer};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
@@ -55,7 +56,7 @@ const N: usize = 4;
 fn run_stress(num_consumers: usize) {
     assert!((1..=N).contains(&num_consumers));
 
-    let rb = SpmcRingBuffer::<Payload, CAP, N>::new();
+    let rb = Arc::new(SpmcRingBuffer::<Payload, CAP, N>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let consumers: Vec<_> = (0..num_consumers).map(|_| rb.get_new_consumer().unwrap()).collect();
 
@@ -128,7 +129,7 @@ fn stress_four_consumers_full_fanout() {
 /// slow-path refresh to run constantly.
 #[test]
 fn stress_tiny_capacity_high_contention() {
-    let rb = SpmcRingBuffer::<Payload, 4, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<Payload, 4, 4>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let consumers: Vec<_> = (0..4).map(|_| rb.get_new_consumer().unwrap()).collect();
     let items: u64 = 50_000;
@@ -181,14 +182,14 @@ fn stress_tiny_capacity_high_contention() {
 /// the entire stream.
 #[test]
 fn stress_uneven_consumer_speeds() {
-    let rb = SpmcRingBuffer::<Payload, 64, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<Payload, 64, 4>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let fast = rb.get_new_consumer().unwrap();
     let slow = rb.get_new_consumer().unwrap();
     let items: u64 = 50_000;
     let done = std::sync::Arc::new(AtomicBool::new(false));
 
-    let spawn_consumer = |c: SpmcRingBufferConsumer<Payload, 64>,
+    let spawn_consumer = |c: SpmcRingBufferConsumer<Payload, 64, 4>,
                           done: std::sync::Arc<AtomicBool>,
                           dawdle: bool| {
         thread::spawn(move || {
@@ -248,7 +249,7 @@ fn stress_uneven_consumer_speeds() {
 // ---------------------------------------------------------------------------
 #[test]
 fn blocking_pop_unblocks_when_producer_pushes() {
-    let rb = SpmcRingBuffer::<u64, 8, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 8, 4>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let consumer = rb.get_new_consumer().unwrap();
 
@@ -265,7 +266,7 @@ fn blocking_pop_unblocks_when_producer_pushes() {
 
 #[test]
 fn blocking_push_unblocks_when_consumer_frees_a_slot() {
-    let rb = SpmcRingBuffer::<u64, 8, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 8, 4>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let consumer = rb.get_new_consumer().unwrap();
 

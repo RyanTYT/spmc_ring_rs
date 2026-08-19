@@ -23,6 +23,7 @@
 
 use proptest::prelude::*;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBuffer;
 
 #[derive(Clone, Debug)]
@@ -79,7 +80,7 @@ impl Model {
 /// Drive both the model and the real impl through the same op sequence.
 /// `run_one::<CAP, N>` is monomorphized per config we test.
 fn run_one<const CAP: usize, const N: usize>(ops: &[Op]) {
-    let rb = SpmcRingBuffer::<u64, CAP, N>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, CAP, N>::new());
     let mut producer = rb.get_new_producer().unwrap();
     let consumers: Vec<_> = (0..N).map(|_| rb.get_new_consumer().unwrap()).collect();
     let mut model = Model::new(CAP, N);

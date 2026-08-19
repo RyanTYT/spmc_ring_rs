@@ -10,20 +10,21 @@
 #![cfg(not(feature = "loom"))]
 
 use spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBuffer;
+use std::sync::Arc;
 
 // Convenience alias so call sites stay short.
 type Rb = SpmcRingBuffer<u64, 8, 4>;
 
 #[test]
 fn empty_buffer_pops_none() {
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let c = rb.get_new_consumer().unwrap();
     assert_eq!(c.try_pop(), None);
 }
 
 #[test]
 fn single_push_single_pop() {
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -34,7 +35,7 @@ fn single_push_single_pop() {
 
 #[test]
 fn fifo_order_preserved() {
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -51,7 +52,7 @@ fn fifo_order_preserved() {
 fn try_push_fails_when_full_and_returns_item() {
     // CAP=8, one consumer that never consumes -> 9th push must fail with the
     // item handed back.
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let mut p = rb.get_new_producer().unwrap();
     let _c = rb.get_new_consumer().unwrap(); // registered but idle
 
@@ -65,7 +66,7 @@ fn try_push_fails_when_full_and_returns_item() {
 #[test]
 fn try_push_succeeds_again_after_consumer_frees_a_slot() {
     // Use CAP=2 here to make "full" cheap to reach.
-    let rb = SpmcRingBuffer::<u64, 2, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 2, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -84,7 +85,7 @@ fn try_push_succeeds_again_after_consumer_frees_a_slot() {
 #[test]
 fn wrap_around_many_times() {
     // Interleave push/pop across the CAP boundary to exercise the mask.
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -97,7 +98,7 @@ fn wrap_around_many_times() {
 
 #[test]
 fn fan_out_every_consumer_sees_every_item_independently() {
-    let rb = Rb::new();
+    let rb = Arc::new(Rb::new());
     let mut p = rb.get_new_producer().unwrap();
     let c1 = rb.get_new_consumer().unwrap();
     let c2 = rb.get_new_consumer().unwrap();
@@ -113,7 +114,7 @@ fn fan_out_every_consumer_sees_every_item_independently() {
     assert_eq!(c1.try_pop(), Some(1));
     assert_eq!(c3.try_pop(), Some(0)); // c3 still starts at 0
 
-    let drain = |c: &spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBufferConsumer<u64, 8>, start: u64| {
+    let drain = |c: &spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBufferConsumer<u64, 8, 4>, start: u64| {
         let mut expected = start;
         while let Some(v) = c.try_pop() {
             assert_eq!(v, expected, "consumer saw out-of-order / gap");
@@ -129,7 +130,7 @@ fn fan_out_every_consumer_sees_every_item_independently() {
 #[test]
 fn slowest_consumer_gates_the_buffer() {
     // Free space is bounded by the *slower* of the two consumers.
-    let rb = SpmcRingBuffer::<u64, 4, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 4, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let fast = rb.get_new_consumer().unwrap();
     let _slow = rb.get_new_consumer().unwrap(); // never consumes
@@ -149,7 +150,7 @@ fn slowest_consumer_gates_the_buffer() {
 #[test]
 fn capacity_one_degenerate() {
     // CAP=1 is a valid power of two.
-    let rb = SpmcRingBuffer::<u64, 1, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 1, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -163,7 +164,7 @@ fn capacity_one_degenerate() {
 #[test]
 fn registering_more_than_n_consumers_returns_none() {
     // N = 2 here; the 3rd consumer request must return None (not panic).
-    let rb = SpmcRingBuffer::<u64, 8, 2>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 8, 2>::new());
     assert!(rb.get_new_consumer().is_some(), "1st consumer");
     assert!(rb.get_new_consumer().is_some(), "2nd consumer");
     assert!(rb.get_new_consumer().is_none(), "3rd consumer must be None (> N=2)");
@@ -172,7 +173,7 @@ fn registering_more_than_n_consumers_returns_none() {
 #[test]
 fn only_one_producer_is_handed_out() {
     // Single producer: first call Some, second call None.
-    let rb = SpmcRingBuffer::<u64, 8, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 8, 4>::new());
     let p1 = rb.get_new_producer();
     assert!(p1.is_some(), "first producer must be Some");
     assert!(rb.get_new_producer().is_none(), "second producer must be None");

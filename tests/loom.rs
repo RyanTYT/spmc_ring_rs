@@ -19,6 +19,7 @@
 #![cfg(feature = "loom")]
 
 use loom::thread;
+use loom::sync::Arc;
 use spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBuffer;
 
 /// CONTRACT 1 — Producer -> consumer visibility (release/acquire).
@@ -29,7 +30,7 @@ use spmc_ring::ring_buffer::spmc_ring_buffer::SpmcRingBuffer;
 #[test]
 fn loom_producer_to_consumer_release_acquire() {
     loom::model(|| {
-        let rb = SpmcRingBuffer::<u64, 2, 2>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 2, 2>::new());
         let mut producer = rb.get_new_producer().unwrap();
         let consumer = rb.get_new_consumer().unwrap();
 
@@ -51,7 +52,7 @@ fn loom_producer_to_consumer_release_acquire() {
 #[test]
 fn loom_no_loss_no_duplication_single_consumer() {
     loom::model(|| {
-        let rb = SpmcRingBuffer::<u64, 2, 1>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 2, 1>::new());
         let mut producer = rb.get_new_producer().unwrap();
         let consumer = rb.get_new_consumer().unwrap();
 
@@ -80,7 +81,7 @@ fn loom_no_loss_no_duplication_single_consumer() {
 #[test]
 fn loom_fanout_two_consumers() {
     loom::model(|| {
-        let rb = SpmcRingBuffer::<u64, 2, 2>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 2, 2>::new());
         let mut producer = rb.get_new_producer().unwrap();
         let c1 = rb.get_new_consumer().unwrap();
         let c2 = rb.get_new_consumer().unwrap();
@@ -112,7 +113,7 @@ fn loom_fanout_two_consumers() {
 #[test]
 fn loom_producer_cache_never_ahead_of_reality() {
     loom::model(|| {
-        let rb = SpmcRingBuffer::<u64, 2, 2>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 2, 2>::new());
         let mut producer = rb.get_new_producer().unwrap();
         let consumer = rb.get_new_consumer().unwrap();
 
@@ -150,7 +151,7 @@ fn loom_producer_cache_never_ahead_of_reality() {
 #[test]
 fn loom_fail_on_full_no_overwrite() {
     loom::model(|| {
-        let rb = SpmcRingBuffer::<u64, 1, 1>::new();
+        let rb = Arc::new(SpmcRingBuffer::<u64, 1, 1>::new());
         let mut producer = rb.get_new_producer().unwrap();
         let consumer = rb.get_new_consumer().unwrap();
 

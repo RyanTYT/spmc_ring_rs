@@ -21,9 +21,12 @@
 #![cfg(not(feature = "loom"))]
 
 use spmc_ring::ring_buffer::spmc_ring_buffer::{SpmcRingBufferProducer, SpmcRingBuffer};
+use std::sync::Arc;
 
 /// Assert the producer's cache is a conservative lower bound of reality.
-fn assert_never_stale_ahead<const CAP: usize>(p: &SpmcRingBufferProducer<u64, CAP>) {
+fn assert_never_stale_ahead<const CAP: usize, const N: usize>(
+    p: &SpmcRingBufferProducer<u64, CAP, N>,
+) {
     assert!(
         p.cached_min_consumer_index() <= p.true_min_consumer_index(),
         "SAFETY VIOLATION: producer cache {} is AHEAD of true consumer min {} \
@@ -38,7 +41,7 @@ fn assert_never_stale_ahead<const CAP: usize>(p: &SpmcRingBufferProducer<u64, CA
 // ---------------------------------------------------------------------------
 #[test]
 fn produce_is_immediately_visible_to_all_consumers() {
-    let rb = SpmcRingBuffer::<u64, 8, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 8, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c1 = rb.get_new_consumer().unwrap();
     let c2 = rb.get_new_consumer().unwrap();
@@ -54,7 +57,7 @@ fn produce_is_immediately_visible_to_all_consumers() {
 // ---------------------------------------------------------------------------
 #[test]
 fn consumer_progress_is_invisible_until_a_full_try_push_requeries() {
-    let rb = SpmcRingBuffer::<u64, 4, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 4, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -96,7 +99,7 @@ fn producer_may_miss_updates_but_try_push_slow_path_recovers() {
     // The producer can be arbitrarily stale, but a try_push that would fail
     // against the stale cache re-queries and then succeeds if space truly
     // exists. This models "only when it queries again does it know".
-    let rb = SpmcRingBuffer::<u64, 2, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 2, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -121,7 +124,7 @@ fn stale_behind_never_ahead_under_random_ops() {
     // Deterministic xorshift schedule (no rng dep) interleaving push / pop,
     // continuously asserting the cache is never ahead of reality. Note: there
     // is no explicit "refresh" op — refresh only happens inside try_push.
-    let rb = SpmcRingBuffer::<u64, 4, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 4, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c = rb.get_new_consumer().unwrap();
 
@@ -153,7 +156,7 @@ fn dead_consumer_permanently_stalls_the_producer() {
     // A registered-but-idle consumer must permanently block the producer once
     // the buffer fills — this is the intended stall, not a bug. We use try_push
     // (never the blocking push, which would hang by design here).
-    let rb = SpmcRingBuffer::<u64, 4, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 4, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let alive = rb.get_new_consumer().unwrap();
     let _dead = rb.get_new_consumer().unwrap(); // registered, never consumes
@@ -176,7 +179,7 @@ fn dead_consumer_permanently_stalls_the_producer() {
 
 #[test]
 fn stream_resumes_only_when_all_consumers_advance() {
-    let rb = SpmcRingBuffer::<u64, 2, 4>::new();
+    let rb = Arc::new(SpmcRingBuffer::<u64, 2, 4>::new());
     let mut p = rb.get_new_producer().unwrap();
     let c1 = rb.get_new_consumer().unwrap();
     let c2 = rb.get_new_consumer().unwrap();

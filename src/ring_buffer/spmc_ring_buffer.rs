@@ -13,10 +13,13 @@ Restrictions:
 use loom::cell::UnsafeCell;
 #[cfg(feature = "loom")]
 use loom::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "loom")]
+use loom::sync::Arc;
 
 #[cfg(not(feature = "loom"))]
 use std::cell::UnsafeCell;
 use std::marker::PhantomPinned;
+use std::sync::Arc;
 #[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -42,14 +45,26 @@ unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Sync
     for SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>
 {
 }
-unsafe impl<T: Send, const CAPACITY: usize> Sync for SpmcRingBufferProducer<T, CAPACITY> {}
-unsafe impl<T: Send, const CAPACITY: usize> Sync for SpmcRingBufferConsumer<T, CAPACITY> {}
+unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Sync
+    for SpmcRingBufferProducer<T, CAPACITY, NUM_CONSUMERS>
+{
+}
+unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Sync
+    for SpmcRingBufferConsumer<T, CAPACITY, NUM_CONSUMERS>
+{
+}
 unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Send
     for SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>
 {
 }
-unsafe impl<T: Send, const CAPACITY: usize> Send for SpmcRingBufferProducer<T, CAPACITY> {}
-unsafe impl<T: Send, const CAPACITY: usize> Send for SpmcRingBufferConsumer<T, CAPACITY> {}
+unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Send
+    for SpmcRingBufferProducer<T, CAPACITY, NUM_CONSUMERS>
+{
+}
+unsafe impl<T: Send, const CAPACITY: usize, const NUM_CONSUMERS: usize> Send
+    for SpmcRingBufferConsumer<T, CAPACITY, NUM_CONSUMERS>
+{
+}
 
 pub struct SpmcRingBuffer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> {
     heads: [CacheAligned<AtomicUsize>; NUM_CONSUMERS],
@@ -92,8 +107,8 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
     }
 
     pub fn get_new_producer(
-        self: std::pin::Pin<&Self>,
-    ) -> Option<SpmcRingBufferProducer<T, CAPACITY>> {
+        self: &Arc<Self>,
+    ) -> Option<SpmcRingBufferProducer<T, CAPACITY, NUM_CONSUMERS>> {
         if let Err(_) = self.num_producers.compare_exchange(
             0,
             1,
@@ -115,12 +130,13 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             buffer,
 
             num_consumers,
+            underlying_buffer_ptr: Arc::clone(self),
         })
     }
 
     pub fn get_new_consumer(
-        self: std::pin::Pin<&Self>,
-    ) -> Option<SpmcRingBufferConsumer<T, CAPACITY>> {
+        self: &Arc<Self>,
+    ) -> Option<SpmcRingBufferConsumer<T, CAPACITY, NUM_CONSUMERS>> {
         let mut current_consumers = self.num_consumers.load(Ordering::Acquire);
         loop {
             // 1. Guard check: Reject if maximum consumers reached
@@ -155,20 +171,26 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
 
             #[cfg(feature = "test-hooks")]
             id: current_consumers,
+
+            underlying_buffer_ptr: Arc::clone(self),
         })
     }
 }
 
-pub struct SpmcRingBufferProducer<T, const CAPACITY: usize> {
+pub struct SpmcRingBufferProducer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> {
     last_slowest_head: UnsafeCell<usize>,
     heads: *mut CacheAligned<AtomicUsize>,
     tail: *const AtomicUsize,
     buffer: *mut UnsafeCell<Option<T>>,
 
     num_consumers: *const AtomicUsize,
+
+    underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
 }
 
-impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
+impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
+    SpmcRingBufferProducer<T, CAPACITY, NUM_CONSUMERS>
+{
     #[cfg(feature = "test-hooks")]
     pub fn cached_min_consumer_index(&self) -> usize {
         unsafe {
@@ -275,7 +297,7 @@ impl<T: Clone, const CAPACITY: usize> SpmcRingBufferProducer<T, CAPACITY> {
     }
 }
 
-pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize> {
+pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> {
     head: *mut CacheAligned<AtomicUsize>,
     tail: *const AtomicUsize,
     cached_tail: UnsafeCell<usize>,
@@ -283,9 +305,13 @@ pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize> {
 
     #[cfg(feature = "test-hooks")]
     id: usize,
+
+    underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
 }
 
-impl<T: Clone, const CAPACITY: usize> SpmcRingBufferConsumer<T, CAPACITY> {
+impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
+    SpmcRingBufferConsumer<T, CAPACITY, NUM_CONSUMERS>
+{
     #[cfg(feature = "test-hooks")]
     pub fn id(&self) -> usize {
         return self.id;
