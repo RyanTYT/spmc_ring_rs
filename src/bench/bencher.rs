@@ -40,7 +40,6 @@
 //! See the methodology discussion in the plan (and `report/README.md`) for the
 //! full rationale.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 /// Batch size for fast-path batched latency. 512 keeps per-op Instant overhead
@@ -269,10 +268,7 @@ impl PushStats {
 
     /// Max fast-path batch-mean latency (ns/op). NaN if no batches.
     pub fn lat_max(&self) -> f64 {
-        self.lat_batches
-            .iter()
-            .copied()
-            .fold(f64::NAN, f64::max)
+        self.lat_batches.iter().copied().fold(f64::NAN, f64::max)
     }
 
     /// p50 of slow-path (inter-fail) latency (ns). NaN if no fails.
@@ -460,7 +456,10 @@ mod tests {
         assert!(stats.ok_ops > 0, "expected some successful pushes");
         // Sanity: the buffer is tiny and the consumer is idle, so we MUST have
         // hit the slow path (fail_ops > 0) and recorded inter-fail samples.
-        assert!(stats.fail_ops > 0, "expected slow-path fails (buffer fills)");
+        assert!(
+            stats.fail_ops > 0,
+            "expected slow-path fails (buffer fills)"
+        );
         assert!(
             !stats.fail_lat_samples.is_empty(),
             "fail-latency samples should be recorded on the slow path"
@@ -470,18 +469,27 @@ mod tests {
         assert!(tput > 0.0, "throughput must be positive, got {tput}");
         assert!(tput < 1e12, "throughput implausibly high: {tput}");
         // Batch-means present (fast path ran).
-        assert!(!stats.lat_batches.is_empty(), "fast-path batches should exist");
+        assert!(
+            !stats.lat_batches.is_empty(),
+            "fast-path batches should exist"
+        );
         // p50/p99 of batch-means and fail latency must be positive numbers.
         assert!(stats.lat_p50() > 0.0, "p50 batch latency positive");
         assert!(stats.lat_p99() >= stats.lat_p50(), "p99 >= p50 (latency)");
         assert!(stats.fail_lat_p50() > 0.0, "p50 fail latency positive");
-        assert!(stats.fail_lat_p99() >= stats.fail_lat_p50(), "p99 >= p50 (fail)");
+        assert!(
+            stats.fail_lat_p99() >= stats.fail_lat_p50(),
+            "p99 >= p50 (fail)"
+        );
         // fail_rate in [0,1].
         let fr = stats.fail_rate();
         assert!((0.0..=1.0).contains(&fr), "fail_rate in [0,1], got {fr}");
         // Window length roughly 30 ms (allow scheduler slack).
         let win_ms = stats.window_ns() / 1e6;
-        assert!(win_ms >= 25.0 && win_ms <= 100.0, "window ~30ms, got {win_ms}ms");
+        assert!(
+            win_ms >= 25.0 && win_ms <= 100.0,
+            "window ~30ms, got {win_ms}ms"
+        );
     }
 
     /// Nearest-rank percentile correctness on a known dataset.

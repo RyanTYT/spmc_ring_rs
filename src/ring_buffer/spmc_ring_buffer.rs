@@ -12,9 +12,9 @@ Restrictions:
 #[cfg(feature = "loom")]
 use loom::cell::UnsafeCell;
 #[cfg(feature = "loom")]
-use loom::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "loom")]
 use loom::sync::Arc;
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(feature = "loom"))]
 use std::cell::UnsafeCell;
@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::ops::Deref;
-use std::usize::MAX;
 
 // const SPMC_RING_SIZE: usize = 2_usize.pow(3);
 // const NUM_CONSUMERS: usize = 4_usize;
@@ -130,7 +129,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             buffer,
 
             num_consumers,
-            underlying_buffer_ptr: Arc::clone(self),
+            _underlying_buffer_ptr: Arc::clone(self),
         })
     }
 
@@ -172,7 +171,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             #[cfg(feature = "test-hooks")]
             id: current_consumers,
 
-            underlying_buffer_ptr: Arc::clone(self),
+            _underlying_buffer_ptr: Arc::clone(self),
         })
     }
 }
@@ -185,7 +184,7 @@ pub struct SpmcRingBufferProducer<T, const CAPACITY: usize, const NUM_CONSUMERS:
 
     num_consumers: *const AtomicUsize,
 
-    underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
+    _underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
 }
 
 impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
@@ -209,7 +208,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
         unsafe {
             let num_consumers = (&*self.num_consumers).load(Ordering::Acquire);
             let current_slowest_head = {
-                let mut slowest_head = MAX;
+                let mut slowest_head = usize::MAX;
                 let mut head = self.heads;
                 for _ in 0..num_consumers {
                     let head_ptr = &*head;
@@ -239,7 +238,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
             let last_slowest_head = last_slowest_head_ptr.read();
             if tail - last_slowest_head == CAPACITY {
                 let current_slowest_head = {
-                    let mut slowest_head = MAX;
+                    let mut slowest_head = usize::MAX;
                     let mut head = self.heads;
                     for _ in 0..num_consumers {
                         let head_ptr = &*head;
@@ -306,7 +305,7 @@ pub struct SpmcRingBufferConsumer<T, const CAPACITY: usize, const NUM_CONSUMERS:
     #[cfg(feature = "test-hooks")]
     id: usize,
 
-    underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
+    _underlying_buffer_ptr: Arc<SpmcRingBuffer<T, CAPACITY, NUM_CONSUMERS>>,
 }
 
 impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>

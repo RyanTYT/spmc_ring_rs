@@ -12,7 +12,6 @@ Restrictions:
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::usize::MAX;
 
 pub struct SyncRingBuffer<T, const CAPACITY: usize, const NUM_CONSUMERS: usize> {
     heads: Arc<[Arc<RwLock<usize>>; NUM_CONSUMERS]>,
@@ -112,7 +111,7 @@ impl<T: Clone, const CAPACITY: usize, const NUM_CONSUMERS: usize>
 {
     pub fn try_push(&self, item: T) -> Result<(), T> {
         // get earliest head - cached, and if cached is full, then check updated values
-        let mut slowest_head = MAX;
+        let mut slowest_head = usize::MAX;
         for i in 0..self.num_consumers.load(Ordering::SeqCst) {
             slowest_head = slowest_head.min(*self.heads[i].read().map_err(|_| item.clone())?);
         }
